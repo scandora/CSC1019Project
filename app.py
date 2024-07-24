@@ -1,8 +1,17 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, session
 import pandas as pd
 import random
 
 app = Flask(__name__)
+app.secret_key = 'your_secret_key'
+
+logged_in_users = set()
+game_sessions = {}
+game_requests = {}
+
+# Add the computer user
+computer_username = "Computer"
+logged_in_users.add(computer_username)
 
 outcome_matrix_df = pd.DataFrame(
     [
@@ -18,54 +27,125 @@ outcome_matrix_df = pd.DataFrame(
     index=["Rock", "Paper", "Scissors", "Batman", "Ozzy", "Lizard", "Spock"]
 )
 
-def get_computer_selection():
-    action_name = random.choice(list(outcome_matrix_df.columns))
-    print(f"Computer has chosen: {action_name}")
-    return action_name
+def get_computer_action():
+    return random.choice(list(outcome_matrix_df.columns))
 
-
-def determine_winner(user_action, computer_action, return_result=False):
-    if user_action == computer_action:
+def determine_winner(user_action, opponent_action, return_result=False):
+    if user_action == opponent_action:
         result = "It's a tie!"
     else:
-        outcome = outcome_matrix_df.loc[user_action, computer_action]
+        outcome = outcome_matrix_df.loc[user_action, opponent_action]
         if outcome:
-            result = f"{user_action} beats {computer_action}! You win!"
+            result = f"{user_action} beats {opponent_action}! You win!"
         else:
-            result = f"{computer_action} beats {user_action}! You lose."
+            result = f"{opponent_action} beats {user_action}! You lose."
     if return_result:
         return result
     print(result)
 
-
 @app.route('/')
 def home():
-    return "Welcome to the Rock-Paper-Scissors-Batman-Ozzy-Lizard-Spock Game! Use /play to start. You can play against another player or the computer."
+    if 'username' in session:
+        return f"Welcome {session['username']}! Use /play to start. You can play against another player or the computer."
+    else:
+        return "Welcome to the Rock-Paper-Scissors-Batman-Ozzy-Lizard-Spock Game! Please log in using /login."
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    username = data.get('username')
+    if username:
+        session['username'] = username
+        logged_in_users.add(username)
+        return jsonify({"message": f"Logged in as {username}"}), 200
+    return jsonify({"error": "Username is required"}), 400
+
+@app.route('/logout')
+def logout():
+    username = session.pop('username', None)
+    if username:
+        logged_in_users.discard(username)
+    return jsonify({"message": "Logged out"}), 200
+
+@app.route('/start_game', methods=['POST'])
+def start_game():
+    if 'username' not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.json
+    opponent = data.get('opponent')
+    if opponent not in logged_in_users:
+        return jsonify({"error": "Opponent not logged in"}), 400
+
+    game_requests[opponent] = session['username']
+    return jsonify({"message": f"Game request sent to {opponent}"}), 200
+
+
+@app.route('/check_game_requests', methods=['GET'])
+def check_game_requests():
+    if 'username' not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    username = session['username']
+    requester = game_requests.get(username)
+    if requester:
+        return jsonify({"requester": requester}), 200
+    else:
+        return jsonify({"message": "No game requests"}), 200
 
 
 @app.route('/play', methods=['POST'])
 def play_game():
+    if 'username' not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
     data = request.json
     user_action = data.get('user_action')
-    opponent_action = data.get('opponent_action', None)  # New line to accept opponent's action
 
-    # Validate user action
     if user_action not in outcome_matrix_df.columns:
         return jsonify({"error": "Invalid user action"}), 400
 
-    # User vs. Computer
-    if opponent_action is None:
-        computer_action = get_computer_selection()
-        result = determine_winner(user_action, computer_action, return_result=True)
-        return jsonify({"user_action": user_action, "computer_action": computer_action, "result": result})
+    opponent = game_sessions.get(session['username'])
+    if not opponent:
+        return jsonify({"error": "No game session found"}), 400
 
-    # User vs. User
-    elif opponent_action in outcome_matrix_df.columns:  # Validate opponent action
+    # Store the user's action
+    session['user_action'] = user_action
+
+    # Check if the opponent has made their choice
+    if opponent == computer_username:
+        opponent_action = get_computer_action()
+    else:
+        opponent_action = session.get('opponent_action')
+
+    if opponent_action:
         result = determine_winner(user_action, opponent_action, return_result=True)
         return jsonify({"user_action": user_action, "opponent_action": opponent_action, "result": result})
     else:
-        return jsonify({"error": "Invalid opponent action"}), 400
+        return jsonify({"message": "Waiting for opponent"}), 200
 
+
+@app.route('/check_opponent_action', methods=['GET'])
+def check_opponent_action():
+    if 'username' not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    opponent = game_sessions.get(session['username'])
+    if not opponent:
+        return jsonify({"error": "No game session found"}), 400
+
+    if opponent == computer_username:
+        return jsonify({"opponent_action": get_computer_action()}), 200
+
+    opponent_action = session.get('opponent_action')
+    if opponent_action:
+        return jsonify({"opponent_action": opponent_action}), 200
+    else:
+        return jsonify({"message": "Opponent has not made a choice yet"}), 200
+
+@app.route('/users', methods=['GET'])
+def get_logged_in_users():
+    return jsonify({"users": list(logged_in_users)}), 200
 
 if __name__ == '__main__':
     app.run(debug=True)
